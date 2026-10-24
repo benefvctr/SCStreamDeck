@@ -70,6 +70,60 @@ public sealed class InstallationDetectionMergerTests : IDisposable
     }
 
     [Fact]
+    public void Merge_TwoRootsForSameChannel_KeepsNewestDataP4K()
+    {
+        SCInstallCandidate current = CreateLiveInstall("Current", new DateTime(2026, 10, 20, 0, 0, 0, DateTimeKind.Utc));
+        SCInstallCandidate stale = CreateLiveInstall("Stale", new DateTime(2023, 10, 12, 0, 0, 0, DateTimeKind.Utc));
+
+        (Dictionary<string, SCInstallCandidate> map, Dictionary<string, string> sources) =
+            InstallationDetectionMerger.Merge(
+                [current, stale],
+                Array.Empty<SCInstallCandidate>(),
+                true);
+
+        map.Values.Should().ContainSingle(c => c.Channel == SCChannel.Live);
+        map.Values.Single(c => c.Channel == SCChannel.Live).RootPath.Should().Be(current.RootPath);
+        sources["Live"].Should().Be("RSI Logs");
+    }
+
+    [Fact]
+    public void Merge_CustomOverrideAtDifferentRoot_WinsOverNewerAutoDetected()
+    {
+        SCInstallCandidate auto = CreateLiveInstall("Auto", new DateTime(2026, 10, 20, 0, 0, 0, DateTimeKind.Utc));
+        SCInstallCandidate custom = CreateLiveInstall("Custom", new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc)) with
+        {
+            Source = InstallSource.UserProvided
+        };
+
+        (Dictionary<string, SCInstallCandidate> map, Dictionary<string, string> sources) =
+            InstallationDetectionMerger.Merge(
+                [auto],
+                [custom],
+                true);
+
+        map.Values.Should().ContainSingle(c => c.Channel == SCChannel.Live);
+        map.Values.Single(c => c.Channel == SCChannel.Live).RootPath.Should().Be(custom.RootPath);
+        sources["Live"].Should().Be("Custom Override");
+    }
+
+    [Fact]
+    public void Merge_TwoRootsWithEqualDataP4KTimes_KeepsFirstDetected()
+    {
+        DateTime sameTime = new(2026, 10, 20, 0, 0, 0, DateTimeKind.Utc);
+        SCInstallCandidate first = CreateLiveInstall("First", sameTime);
+        SCInstallCandidate copy = CreateLiveInstall("Copy", sameTime);
+
+        (Dictionary<string, SCInstallCandidate> map, _) =
+            InstallationDetectionMerger.Merge(
+                [first],
+                [copy],
+                true);
+
+        map.Values.Should().ContainSingle(c => c.Channel == SCChannel.Live);
+        map.Values.Single(c => c.Channel == SCChannel.Live).RootPath.Should().Be(first.RootPath);
+    }
+
+    [Fact]
     public void Merge_AddsNewChannelsFromCachedRoot_WhenNotFullDetection()
     {
         string rootNorm = SecurePathValidator.TryNormalizePath(_root, out string n) ? n : _root;
@@ -98,5 +152,18 @@ public sealed class InstallationDetectionMergerTests : IDisposable
         map.Values.Should().Contain(c => c.Channel == SCChannel.Live);
         map.Values.Should().Contain(c => c.Channel == SCChannel.Ptu);
         sources["Ptu"].Should().Be("Cache (New Channel)");
+    }
+
+    private SCInstallCandidate CreateLiveInstall(string rootName, DateTime dataP4KLastWriteUtc)
+    {
+        string rootPath = Path.Combine(_root, rootName);
+        string channelPath = Path.Combine(rootPath, "LIVE");
+        string dataP4KPath = Path.Combine(channelPath, SCConstants.Files.DataP4KFileName);
+
+        Directory.CreateDirectory(channelPath);
+        File.WriteAllText(dataP4KPath, "test");
+        File.SetLastWriteTimeUtc(dataP4KPath, dataP4KLastWriteUtc);
+
+        return new SCInstallCandidate(rootPath, SCChannel.Live, channelPath, dataP4KPath);
     }
 }
